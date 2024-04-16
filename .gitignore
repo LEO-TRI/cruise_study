@@ -1,4 +1,4 @@
 TandA/data/*
 TandA/notebooks
-TandA/graphs/*
+TandA/graphs
 TandA/src/__pycache__
