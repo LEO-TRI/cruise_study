@@ -1,5 +1,5 @@
 TandA/data/*
 TandA/notebooks
-TandA/graphs
+TandA/graphs/*.png
 TandA/src/__pycache__
 TandA/test.py
