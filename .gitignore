@@ -2,3 +2,4 @@ TandA/data/*
 TandA/notebooks
 TandA/graphs
 TandA/src/__pycache__
+TandA/test.py
