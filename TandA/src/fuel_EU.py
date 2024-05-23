@@ -1,14 +1,37 @@
 from abc import ABC, abstractmethod
 from numbers import Number
+from pathlib import Path
 import itertools as it
 import functools as ft
 import pandas as pd
 from dataclasses import dataclass
 from utils import array_like, dataclass_converter
 from typing import Callable, TypeVar
+import json
 
 V = TypeVar('V')
 R = TypeVar('R')
+
+def load_json_as_dict(filename):
+    """
+    Loads JSON data from a file into a dictionary.
+    
+    Parameters:
+    filename (str): The name of the file to load the JSON data from.
+    
+    Returns:
+    dict: The dictionary containing the JSON data.
+    """
+    try:
+        with open(filename, 'r') as json_file:
+            data = json.load(json_file)
+        return data
+    except FileNotFoundError:
+        print(f"Error: The file {filename} does not exist.")
+    except json.JSONDecodeError:
+        print(f"Error: The file {filename} contains invalid JSON.")
+    except Exception as e:
+        print(f"An error occurred while loading the JSON data: {e}")
 
 
 @dataclass
@@ -51,6 +74,10 @@ class FuelBaseClass(ABC):
     def compute(self):
         pass
 
+    @abstractmethod
+    def compute_cost(self):
+        pass
+
     def inplace_checker(self, arg: object, name: str) -> object:
         
         if arg is None: 
@@ -64,15 +91,12 @@ class FuelBaseClass(ABC):
 class FuelPenaltyOptimiser(FuelBaseClass):
 
     def __init__(self) -> None:
-        
-        self.penalty_cost = None
+        pass
 
     def compute(self, 
                 target_intensity: float, 
                 wtw_co2_mj: float, 
-                lcv: float, 
                 penalty: int, 
-                inplace: bool=False
                 ) -> 'float | FuelPenaltyOptimiser':
 
         #Edge case if someone tries to calculate green electricity
@@ -80,52 +104,48 @@ class FuelPenaltyOptimiser(FuelBaseClass):
             raise ValueError('wtw_co2_mj must be different from 0') 
 
         overshoot = max(0., wtw_co2_mj - target_intensity) 
+        lcv_vlsfo = 41  #lcv vlsfo in GJ
 
-        self.penalty_cost = (overshoot*penalty) / (wtw_co2_mj*lcv)  
+        penalty_cost = penalty * overshoot / (wtw_co2_mj*lcv_vlsfo)
 
-        return self if inplace else self.penalty_cost
+        return penalty_cost
 
     def compute_cost(self, 
                      total_fuel: float, 
                      price: float, 
-                     penalty_cost: float=None
+                     penalty_cost: float
                      ) -> float:
         
-        penalty_cost = self.inplace_checker(penalty_cost, 'penalty_cost')
-
         return total_fuel * (price + penalty_cost)
 
 class FuelMixOptimiser(FuelBaseClass):
 
     def __init__(self) -> None:
-        
-        self.proportion_junior_fuel = None
+        pass
 
     def compute(self,
                 target_intensity: float, 
                 wtw_co2_mj_fuel_senior: float, 
                 wtw_co2_mj_fuel_junior: float,
-                inplace: bool=False
                 ) -> 'float | FuelMixOptimiser':
         
-        fuels_ratio = (wtw_co2_mj_fuel_junior-wtw_co2_mj_fuel_senior)
-        target_ratio = (target_intensity-wtw_co2_mj_fuel_senior)
+        fuels_ratio = wtw_co2_mj_fuel_junior - wtw_co2_mj_fuel_senior
+        target_ratio = target_intensity - wtw_co2_mj_fuel_senior
 
         #If fuel_ratio>=0, then there is no benefit in mixing the fuels
         check = fuels_ratio < 0
-        self.proportion_junior_fuel = max(target_ratio/fuels_ratio, 0.) if check else 0.
+        proportion_junior_fuel = max(target_ratio/fuels_ratio, 0.) if check else 0.
 
-        return self if inplace else self.proportion_junior_fuel
+        return proportion_junior_fuel
     
     def compute_cost(self,
                      total_fuel: float, 
                      senior_fuel_price: float,  
                      junior_fuel_price: float,
-                     junior_fuel_prop: float | None = None, 
+                     junior_fuel_prop: float, 
                     ) -> float:
         
-        junior_fuel_prop = self.inplace_checker(junior_fuel_prop, 'junior_fuel_prop')
-        senior_fuel_prop = (1-junior_fuel_prop)
+        senior_fuel_prop = 1 - junior_fuel_prop
 
         return ((senior_fuel_prop*senior_fuel_price) + (junior_fuel_prop*junior_fuel_price)) * total_fuel
 
@@ -141,48 +161,69 @@ class FuelManager():
 
         self.result = None
 
+    def _comp(self, obj: FuelBaseClass, *args) -> list[float]:
+        return list(map(obj.compute, *args))
+
+    def _comp_cost(self, obj: FuelBaseClass, *args) -> list[float]:
+        return list(map(obj.compute_cost, *args))
+
     def compare(self, 
                 total_fuel: float | list[float], 
                 main_fuel: Fuel, 
                 second_fuel: Fuel,
                 target_intensity: array_like, 
                 penalty: float, 
-                ) -> Comparison:
-                
+                ) -> 'FuelManager':
+        
+        comparison_name = f'Comparison {main_fuel.name} & {second_fuel.name}'
+
         kwargs = {'predicate':lambda x : isinstance(x, Number), 'transformation':lambda x : it.repeat(x)}
         _itercheck_partial = ft.partial(self._itercheck, **kwargs)
 
-        main_fuel, second_fuel = map(dataclass_converter, (main_fuel, second_fuel), it.repeat(_itercheck_partial,2))
-
+        #Transform constant in iterators
+        main_fuel, second_fuel = map(dataclass_converter, (main_fuel, second_fuel), it.repeat(_itercheck_partial))
         total_fuel, penalty = map(_itercheck_partial, (total_fuel, penalty))
 
-        args_penalty = (target_intensity, main_fuel.wtw_ef, main_fuel.lcv, penalty)
-        penalty_list = list(map(self.penalty_calc.compute, *args_penalty))
+        #Calculate costs of encuring penalties
+        penalty_list = self._comp(self.penalty_calc, target_intensity, main_fuel.wtw_ef, penalty) 
+        penalty_costs = self._comp_cost(self.penalty_calc, total_fuel, main_fuel.price, penalty_list)
 
-        args_costs = (total_fuel, main_fuel.price, penalty_list)
-        penalty_costs = list(map(self.penalty_calc.compute_cost, *args_costs))
-        
-        args_mixes = (target_intensity, main_fuel.wtw_ef, second_fuel.wtw_ef)
-        mixes_list = list(map(self.mix_calc.compute, *args_mixes))
+        #Calculate costs of mixing fuels
+        mixes_list = self._comp(self.mix_calc, target_intensity, main_fuel.wtw_ef, second_fuel.wtw_ef)
+        mix_costs = self._comp_cost(self.mix_calc, total_fuel, main_fuel.price, second_fuel.price, mixes_list)
 
-        args_mix_costs = (total_fuel, main_fuel.price, second_fuel.price, mixes_list)
-        mix_costs = list(map(self.mix_calc.compute_cost, *args_mix_costs))
-
+        #Establishing cheapest option
         mix_str = f'Mix {main_fuel.name} & {second_fuel.name}'
         penalty_str = f'Penalty only {main_fuel.name}'
 
         bool_mask = list(map(lambda x,y: x<y, mix_costs, penalty_costs))
-        verdict = map(lambda x: mix_str if x else penalty_str, bool_mask)
-        optimal_mix = map(lambda x,y: round(y,3) if x else 0., bool_mask, mixes_list)
+        verdict = list(map(lambda b: mix_str if b else penalty_str, bool_mask))
+        optimal_mix = list(map(lambda b,m: round(m,3) if b else 0., bool_mask, mixes_list))
 
-        comparison_name = f'Comparison {main_fuel.name} & {second_fuel.name}'
+        self.result = Comparison(name=comparison_name, 
+                                penalty_strat=penalty_costs, 
+                                mix_strat=mix_costs,
+                                optimal_mix=optimal_mix,
+                                verdict=verdict
+                                )
+        
+        return self
+    
+    def save_result(self, path: str) -> None:
+        """
+        Saves a dictionary to a file in JSON format.
+        
+        Parameters:
+        dictionary (dict): The dictionary to save.
+        filename (str): The name of the file to save the dictionary in.
+        """
+        try:
+            with open(path, 'w') as json_file:
+                json.dump(vars(self.result), json_file, indent=4)
+            
+        except Exception as e:
+            print(f"An error occurred while saving the dictionary to JSON: {e}")
 
-        return Comparison(name=comparison_name, 
-                          penalty_strat=penalty_costs, 
-                          mix_strat=mix_costs,
-                          optimal_mix=list(optimal_mix),
-                          verdict=list(verdict)
-                          )
     @staticmethod
     def _itercheck(arg: any, 
                    transformation: Callable[[V], R], 
