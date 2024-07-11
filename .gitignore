@@ -1,6 +1,8 @@
 TandA/data/*
 TandA/notebooks
 TandA/graphs/*
+TandA/graphs/graphs_old/*.png
+
 TandA/src/__pycache__
 TandA/test.py
 *.xlsx
