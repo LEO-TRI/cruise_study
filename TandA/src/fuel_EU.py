@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from numbers import Number
-from pathlib import Path
 import itertools as it
 import functools as ft
 import pandas as pd
@@ -96,12 +95,12 @@ class FuelPenaltyOptimiser(FuelBaseClass):
     def compute(self, 
                 target_intensity: float, 
                 wtw_co2_mj: float, 
-                penalty: int, 
+                penalty: int=2400, 
                 ) -> 'float | FuelPenaltyOptimiser':
 
         #Edge case if someone tries to calculate green electricity
         if wtw_co2_mj==0:        
-            raise ValueError('wtw_co2_mj must be different from 0') 
+            return 0
 
         overshoot = max(0., wtw_co2_mj - target_intensity) 
         lcv_vlsfo = 41  #lcv vlsfo in GJ
@@ -136,6 +135,9 @@ class FuelMixOptimiser(FuelBaseClass):
         check = fuels_ratio < 0
         proportion_junior_fuel = max(target_ratio/fuels_ratio, 0.) if check else 0.
 
+        if proportion_junior_fuel > 1:
+            proportion_junior_fuel = 1
+
         return proportion_junior_fuel
     
     def compute_cost(self,
@@ -146,7 +148,7 @@ class FuelMixOptimiser(FuelBaseClass):
                     ) -> float:
         
         senior_fuel_prop = 1 - junior_fuel_prop
-
+        
         return ((senior_fuel_prop*senior_fuel_price) + (junior_fuel_prop*junior_fuel_price)) * total_fuel
 
 
@@ -180,6 +182,8 @@ class FuelManager():
         kwargs = {'predicate':lambda x : isinstance(x, Number), 'transformation':lambda x : it.repeat(x)}
         _itercheck_partial = ft.partial(self._itercheck, **kwargs)
 
+        comparison_flag = True if (main_fuel == second_fuel) else False
+
         #Transform constant in iterators
         main_fuel, second_fuel = map(dataclass_converter, (main_fuel, second_fuel), it.repeat(_itercheck_partial))
         total_fuel, penalty = map(_itercheck_partial, (total_fuel, penalty))
@@ -189,8 +193,12 @@ class FuelManager():
         penalty_costs = self._comp_cost(self.penalty_calc, total_fuel, main_fuel.price, penalty_list)
 
         #Calculate costs of mixing fuels
-        mixes_list = self._comp(self.mix_calc, target_intensity, main_fuel.wtw_ef, second_fuel.wtw_ef)
-        mix_costs = self._comp_cost(self.mix_calc, total_fuel, main_fuel.price, second_fuel.price, mixes_list)
+        if comparison_flag:
+            mixes_list = map(lambda x : 0, penalty_list)
+            mix_costs = penalty_costs
+        else:
+            mixes_list = self._comp(self.mix_calc, target_intensity, main_fuel.wtw_ef, second_fuel.wtw_ef)
+            mix_costs = self._comp_cost(self.mix_calc, total_fuel, main_fuel.price, second_fuel.price, mixes_list)
 
         #Establishing cheapest option
         mix_str = f'Mix {main_fuel.name} & {second_fuel.name}'

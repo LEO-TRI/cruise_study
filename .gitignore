@@ -3,3 +3,4 @@ TandA/notebooks
 TandA/graphs/*.png
 TandA/src/__pycache__
 TandA/test.py
+*.xlsx
