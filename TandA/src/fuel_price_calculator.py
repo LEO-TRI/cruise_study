@@ -66,7 +66,7 @@ if __name__ == '__main__':
         #For the VLSFO ships
         else:
             
-            args = (('VLSFO','e-Methanol'), ('VLSFO', 'VLSFO'), ('e-NH3', 'e-NH3'))
+            args = (('VLSFO','e-Methanol'), ('VLSFO', 'VLSFO'), ('e-NH3', 'e-NH3'), ('e-Methanol', 'e-Methanol'))
             for (f1, f2) in args:
                 filename = f'results_{ship}_{f1}_{f2}.json'
                 res = fm.compare(total_fuel, fuel_kwargs[f1], fuel_kwargs[f2], targets, penalty)
